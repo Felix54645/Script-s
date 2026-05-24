@@ -519,13 +519,125 @@ openAllLocationBtn.Selectable = true
 openAllLocationBtn.AutoButtonColor = true
 
 -- === Create 3 prompts inside Frame ===
-CreatePromptInFrame(frame, "BUTTON", "Q - Stop", "Lock")
+CreatePromptInFrame(frame, "BUTTON", "Q - TP 1ST Location", "Lock")
 CreatePromptInFrame(frame, "BUTTON", "Z - Sell", "Lock")
 CreatePromptInFrame(frame, "BUTTON", "R - Search", "Lock")
 
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
+
+-- Проверка, можно ли безопасно стоять в точке (не внутри стены, не в воздухе)
+local function canStandAt(position, character)
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+	raycastParams.FilterDescendantsInstances = {character}
+
+	-- Проверка 1: есть ли пол под ногами (вниз на 5 studs)
+	local floorCheck = workspace:Raycast(position, Vector3.new(0, -5, 0), raycastParams)
+	if not floorCheck then
+		return false, "no floor beneath"
+	end
+
+	-- Проверка 2: есть ли место для головы (вверх на 6 studs)
+	local ceilingCheck = workspace:Raycast(position + Vector3.new(0, 0.5, 0), Vector3.new(0, 6, 0), raycastParams)
+	if ceilingCheck and (ceilingCheck.Position.Y - position.Y) < 5 then
+		return false, "ceiling too low"
+	end
+
+	-- Проверка 3: не внутри ли стены (коробка размером с игрока)
+	local boxSize = Vector3.new(2, 5, 2)
+	local boxCFrame = CFrame.new(position + Vector3.new(0, 2, 0))
+	local overlappingParts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, raycastParams)
+
+	for _, part in ipairs(overlappingParts) do
+		if part.CanCollide and part.Transparency < 0.9 then
+			return false, "inside wall: " .. part.Name
+		end
+	end
+
+	return true, "safe"
+end
+
+-- Расширенный поиск безопасной позиции рядом со скрапом
+local function findSafePositionNearScrap(scrapBasePart, character)
+	local scrapPos = scrapBasePart.Position
+	local searchRadius = 8 -- радиус поиска вокруг скрапа (в студах)
+
+	-- Пробуем разные смещения вокруг скрапа
+	local offsets = {
+		Vector3.new(0, 0, 0),      -- точно под скрапом
+		Vector3.new(2, 0, 0),
+		Vector3.new(-2, 0, 0),
+		Vector3.new(0, 0, 2),
+		Vector3.new(0, 0, -2),
+		Vector3.new(1.5, 0, 1.5),
+		Vector3.new(-1.5, 0, 1.5),
+		Vector3.new(1.5, 0, -1.5),
+		Vector3.new(-1.5, 0, -1.5),
+		Vector3.new(3, 0, 0),
+		Vector3.new(-3, 0, 0),
+		Vector3.new(0, 0, 3),
+		Vector3.new(0, 0, -3),
+	}
+
+	-- Сортируем смещения по расстоянию до скрапа (ближайшие сначала)
+	table.sort(offsets, function(a, b)
+		return a.Magnitude < b.Magnitude
+	end)
+
+	for _, offset in ipairs(offsets) do
+		local checkPos = scrapPos + offset
+
+		-- Raycast ВНИЗ от этой позиции, чтобы найти реальную поверхность
+		local raycastParams = RaycastParams.new()
+		raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+		raycastParams.FilterDescendantsInstances = {character}
+
+		local rayOrigin = checkPos + Vector3.new(0, 5, 0)  -- Начинаем чуть выше
+		local rayDirection = Vector3.new(0, -15, 0)       -- Смотрим вниз на 15 studs
+
+		local raycastResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+
+		if raycastResult then
+			local groundPoint = raycastResult.Position + Vector3.new(0, 3, 0) -- Ноги на земле
+
+			-- Проверяем, можно ли здесь стоять
+			local canStand, reason = canStandAt(groundPoint, character)
+			if canStand then
+				-- Доп. проверка: достаточно ли места над головой для прыжка/сбора
+				local headCheck = workspace:Raycast(groundPoint + Vector3.new(0, 4, 0), Vector3.new(0, 3, 0), raycastParams)
+				if not headCheck or headCheck.Distance > 2.5 then
+					print("[SafePos] Found safe position at offset", offset, "reason:", reason)
+					return groundPoint
+				end
+			end
+		end
+	end
+
+	-- Если ничего не нашли, пробуем найти любую точку на земле в радиусе 20 studs
+	local fallbackParams = RaycastParams.new()
+	fallbackParams.FilterType = Enum.RaycastFilterType.Blacklist
+	fallbackParams.FilterDescendantsInstances = {character}
+
+	for angle = 0, 360, 30 do
+		local rad = math.rad(angle)
+		local offset = Vector3.new(math.cos(rad) * searchRadius, 0, math.sin(rad) * searchRadius)
+		local checkPos = scrapPos + offset
+
+		local raycastResult = workspace:Raycast(checkPos + Vector3.new(0, 10, 0), Vector3.new(0, -20, 0), fallbackParams)
+		if raycastResult then
+			local groundPoint = raycastResult.Position + Vector3.new(0, 3, 0)
+			local canStand, _ = canStandAt(groundPoint, character)
+			if canStand then
+				print("[SafePos] Fallback found safe position")
+				return groundPoint
+			end
+		end
+	end
+
+	return nil
+end
 
 -- ======================== FIND EXISTING UI ========================
 
@@ -1147,7 +1259,7 @@ local highlightedNPCs = {} -- Подсветка NPC
 local npcDistanceLabels = {} -- Текст дистанции над NPC
 local lastTeleportTime = 0
 local teleportCooldown = 0.5 -- Задержка между телепортами в секундах (уменьшено)
-local NPC_CHECK_RADIUS = 10 -- Радиус проверки NPC (было 30, теперь 10)
+local NPC_CHECK_RADIUS = 30 -- Радиус проверки NPC (было 30, теперь 10)
 local autoTeleportEnabled = true -- Авто-телепорт после сбора
 local lastInventoryCount = 0 -- Последнее количество предметов в инвентаре
 local teleportToRandomScrap -- Forward declaration
@@ -1303,7 +1415,6 @@ end
 -- Fallback: невидимые заглушки если кнопки не найдены
 if not searchButton then
 	searchButton = Instance.new("TextButton")
-	searchButton.Visible = false
 	searchButton.Parent = screenGui
 end
 if not sellButton then
@@ -1761,11 +1872,8 @@ end
 local function teleportToStart()
 	if isTeleporting then
 		setStatus("Please wait, teleporting...")
-		searchButton.Visible = false
 		return
 	end
-
-	searchButton.Visible = false -- Скрываем кнопку во время телепорта
 
 	local character = player.Character
 	if not character then 
@@ -2028,13 +2136,10 @@ local function isNPCNearbyPosition(position, radius)
 	return false
 end
 
--- Телепорт к случайному безопасному скрапу
 teleportToRandomScrap = function()
-	print("[Farmer] === teleportToRandomScrap called ===")
-	print("[Farmer] isTeleporting: " .. tostring(isTeleporting))
+	print("[Farmer] === Teleport to random scrap ===")
 
 	if teleportRetryCount >= MAX_TELEPORT_RETRIES then
-		print("[Farmer] Max retries reached, stopping")
 		setStatus("No safe scrap found after " .. MAX_TELEPORT_RETRIES .. " attempts")
 		teleportRetryCount = 0
 		isTeleporting = false
@@ -2061,7 +2166,6 @@ teleportToRandomScrap = function()
 		return
 	end
 
-	-- Проверка задержки между телепортами
 	local timeSinceLastTeleport = tick() - lastTeleportTime
 	if timeSinceLastTeleport < teleportCooldown then
 		setStatus("Please wait " .. (teleportCooldown - timeSinceLastTeleport) .. " seconds")
@@ -2082,16 +2186,12 @@ teleportToRandomScrap = function()
 		return 
 	end
 
-	-- Сохраняем стартовую позицию если её нет
 	if not startPosition then
 		saveStartPosition()
 	end
 
-	-- Скрываем кнопку во время телепорта
-	searchButton.Visible = false
 	isTeleporting = true
 
-	-- Сохраняем текущее количество предметов в инвентаре и их названия
 	lastInventoryCount = getInventoryCount()
 	local inventoryItems = {}
 	local backpack = player:FindFirstChild("Backpack")
@@ -2100,110 +2200,110 @@ teleportToRandomScrap = function()
 			inventoryItems[item.Name] = true
 		end
 	end
-	print("[Farmer] Inventory count before teleport: " .. lastInventoryCount)
 
-	-- Получаем все скрапы
 	local allScraps = getScrapPrompts()
 	print("[Farmer] Total scraps found: " .. #allScraps)
 
-	-- Фильтруем скрапы по безопасности позиции телепорта
+	-- Фильтруем скрапы, у которых есть БЕЗОПАСНАЯ позиция рядом
 	local safeScraps = {}
 	for _, data in ipairs(allScraps) do
-		local scrapPos = data.basePart.Position
-		local groundPos = findGroundBelow(scrapPos)
-		if groundPos then
-			local isSafe, reason = isPositionSafe(groundPos, true)
-			if isSafe then
-				table.insert(safeScraps, data)
+		local safePos = findSafePositionNearScrap(data.basePart, character)
+		if safePos then
+			-- Доп. проверка: нет ли NPC рядом с этой позицией
+			local hasNPC, npcName = hasNPCNearby(safePos, NPC_CHECK_RADIUS)
+			if not hasNPC then
+				table.insert(safeScraps, {
+					prompt = data.prompt,
+					basePart = data.basePart,
+					safePosition = safePos
+				})
 			else
-				print("[Farmer] Scrap skipped (unsafe): " .. reason)
+				print("[Farmer] Scrap skipped (NPC nearby): " .. npcName)
 			end
+		else
+			print("[Farmer] Scrap skipped (no safe position found)")
 		end
 	end
-	print("[Farmer] Safe scraps: " .. #safeScraps)
+
+	print("[Farmer] Safe scraps with valid positions: " .. #safeScraps)
 
 	if #safeScraps == 0 then
-		setStatus("No scraps found! Total: " .. #allScraps .. " | Safe: " .. #safeScraps)
+		setStatus("No safe teleport positions found! Total scraps: " .. #allScraps)
 		isTeleporting = false
-		searchButton.Visible = false
 		updateHighlights()
 		return
 	end
 
-	setStatus("Found " .. #safeScraps .. " safe scraps, teleporting...")
-
-	-- Выбираем случайный скрап
 	local randomIndex = math.random(1, #safeScraps)
 	local targetData = safeScraps[randomIndex]
 	local prompt = targetData.prompt
 	local basePart = targetData.basePart
+	local teleportPosition = targetData.safePosition
+
 	local scrapName = basePart.Parent and basePart.Parent.Name or basePart.Name
-	print("[Farmer] Target scrap name: " .. scrapName)
-
-	-- Находим твердую поверхность НИЖЕ скрапа
-	local scrapPos = basePart.Position
-	local groundPos = findGroundBelow(scrapPos)
-
-	local teleportPosition
-	if groundPos then
-		-- Телепортируемся на землю ниже скрапа
-		teleportPosition = groundPos
-		print("[Farmer] Teleporting to ground below scrap")
-	else
-		-- Если земля не найдена, телепортируемся над скрапом
-		teleportPosition = scrapPos + Vector3.new(0, 5, 0)
-		print("[Farmer] No ground found, teleporting above scrap")
-	end
+	print("[Farmer] Teleporting to scrap: " .. scrapName)
+	print("[Farmer] Safe position: " .. tostring(teleportPosition))
 
 	lastTeleportTime = tick()
 
+	-- Сохраняем текущую высоту перед телепортом для отката
+	local oldPosition = hrp.Position
+
 	-- Телепорт
-	hrp.CFrame = CFrame.new(teleportPosition) * CFrame.Angles(0, hrp.Orientation.Y, 0)
+	local success = pcall(function()
+		hrp.CFrame = CFrame.new(teleportPosition) * CFrame.Angles(0, hrp.Orientation.Y, 0)
+	end)
 
-	task.wait(0.15)
-
-	-- Проверяем, не оказались ли внутри стены
-	local insideWall, wallName = isPositionInsideWall(hrp.Position)
-	if insideWall then
-		print("[Farmer] Inside wall: " .. wallName .. " - trying another scrap")
-		setStatus("Inside wall! Trying another scrap...")
+	if not success then
+		print("[Farmer] Teleport failed!")
 		isTeleporting = false
 		task.wait(0.3)
 		task.spawn(teleportToRandomScrap)
 		return
 	end
 
-	-- Быстрая проверка: начали ли падать сразу после телепорта
-	if hrp.AssemblyLinearVelocity.Y < -30 then
-		print("[Farmer] Falling immediately after teleport - trying another scrap")
-		setStatus("Falling! Trying another scrap...")
+	task.wait(0.2)
+
+	-- Финальная проверка после телепорта
+	local canStand, reason = canStandAt(hrp.Position, character)
+	if not canStand then
+		print("[Farmer] Bad teleport! " .. reason .. " - rolling back")
+		-- Откат на старую позицию
+		hrp.CFrame = CFrame.new(oldPosition)
 		isTeleporting = false
 		task.wait(0.3)
 		task.spawn(teleportToRandomScrap)
 		return
 	end
 
-	-- Проверяем, есть ли NPC рядом после телепорта
-	local hasNPC, npcName = isNPCNearbyPosition(hrp.Position, 10)
+	-- Проверка падения
+	if hrp.AssemblyLinearVelocity.Y < -20 then
+		print("[Farmer] Falling after teleport - rolling back")
+		hrp.CFrame = CFrame.new(oldPosition)
+		isTeleporting = false
+		task.wait(0.3)
+		task.spawn(teleportToRandomScrap)
+		return
+	end
+
+	-- Проверка NPC
+	local hasNPC, npcName = hasNPCNearby(hrp.Position, NPC_CHECK_RADIUS)
 	if hasNPC then
-		print("[Farmer] NPC nearby after teleport: " .. npcName .. " - trying another scrap")
-		setStatus("NPC nearby! Trying another scrap...")
+		print("[Farmer] NPC nearby after teleport: " .. npcName)
 		isTeleporting = false
 		task.wait(0.3)
 		task.spawn(teleportToRandomScrap)
 		return
 	end
 
-	-- Запускаем монитор безопасности
 	startSafetyMonitor()
 
-	-- Поворот камеры к скрапу
 	task.wait(0.1)
 	rotateCameraTo(basePart.Position)
 
 	setStatus("Teleported to: " .. basePart.Parent.Name)
 
-	-- Автоматическая попытка сбора
+	-- Попытка сбора
 	task.wait(0.3)
 	pcall(function()
 		if prompt and prompt.Parent then
@@ -2214,40 +2314,27 @@ teleportToRandomScrap = function()
 		end
 	end)
 
-	-- Ждём и проверяем, собран ли скрап
 	task.wait(1.0)
 
-	-- Проверка 1: ProximityPrompt.Enabled == false И Parent.Transparency >= 1
 	local collected = isScrapCollected(prompt)
-	print("[Farmer] Scrap collected (prompt check): " .. tostring(collected))
-
-	-- Проверка 2: Увеличилось ли количество предметов в инвентаре
 	local newInventoryCount = getInventoryCount()
-	print("[Farmer] Inventory count after: " .. newInventoryCount)
 
 	if newInventoryCount > lastInventoryCount then
 		collected = true
-		print("[Farmer] Inventory increased! Item collected.")
 	end
 
-	-- Проверка 3: Появился ли новый предмет с названием скрапа
 	local newBackpack = player:FindFirstChild("Backpack")
 	if newBackpack then
 		for _, item in ipairs(newBackpack:GetChildren()) do
 			if not inventoryItems[item.Name] then
-				-- Новый предмет!
-				print("[Farmer] New item in inventory: " .. item.Name)
-				-- Проверяем, совпадает ли название с названием скрапа
 				if item.Name == scrapName or string.find(item.Name, scrapName) or string.find(scrapName, item.Name) then
 					collected = true
-					print("[Farmer] Item matches scrap name! Collected.")
 					break
 				end
 			end
 		end
 	end
 
-	-- Сбрасываем флаг телепорта и счётчик попыток
 	isTeleporting = false
 	teleportRetryCount = 0
 	totalTeleportAttempts = 0
@@ -2255,18 +2342,10 @@ teleportToRandomScrap = function()
 	if collected then
 		setStatus("✓ Scrap collected!")
 		updateHighlights()
-
-		-- АВТО-ТЕЛЕПОРТАЦИЯ ОТКЛЮЧЕНА
-		-- if autoTeleportEnabled then
-		--     task.wait(0.5)
-		--     task.spawn(teleportToRandomScrap)
-		--     return
-		-- end
 	else
 		setStatus("Scrap not collected | Press R to try again")
 	end
 
-	-- Показываем кнопку и обновляем подсветку
 	searchButton.Visible = true
 	updateHighlights()
 end
