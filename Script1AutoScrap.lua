@@ -519,13 +519,35 @@ openAllLocationBtn.Selectable = true
 openAllLocationBtn.AutoButtonColor = true
 
 -- === Create 3 prompts inside Frame ===
-CreatePromptInFrame(frame, "BUTTON", "Q - TP 1ST Location", "Lock")
+CreatePromptInFrame(frame, "BUTTON", "Q - Stop", "Lock")
 CreatePromptInFrame(frame, "BUTTON", "Z - Sell", "Lock")
 CreatePromptInFrame(frame, "BUTTON", "R - Search", "Lock")
 
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 local PlayerGui = player:WaitForChild("PlayerGui")
+
+-- ======================== FIND EXISTING UI ========================
+
+-- Ждём появления UI ScreenGui (создаётся StarterGui.LocalScript)
+local uiScreenGui = PlayerGui:WaitForChild("UI", 15)
+
+local tutorialAllLocation = uiScreenGui:WaitForChild("TUTORIALALLLOCATION", 10)
+local button = uiScreenGui:WaitForChild("button", 10)
+local startcont = tutorialAllLocation:WaitForChild("startcont", 10)
+local tutorialLabel = tutorialAllLocation:WaitForChild("tutorial", 10)
+local function getDisc()
+	local d = tutorialAllLocation:FindFirstChild("disc")
+	if d and d:IsA("TextLabel") then
+		d.RichText = true
+	end
+	return d
+end
+
+local backbutton = tutorialAllLocation:WaitForChild("backbutton", 10)
+
+-- Скрыт по умолчанию
+tutorialAllLocation.Visible = false
 
 -- Проверка, можно ли безопасно стоять в точке (не внутри стены, не в воздухе)
 local function canStandAt(position, character)
@@ -638,29 +660,6 @@ local function findSafePositionNearScrap(scrapBasePart, character)
 
 	return nil
 end
-
--- ======================== FIND EXISTING UI ========================
-
--- Ждём появления UI ScreenGui (создаётся StarterGui.LocalScript)
-local uiScreenGui = PlayerGui:WaitForChild("UI", 15)
-
-local tutorialAllLocation = uiScreenGui:WaitForChild("TUTORIALALLLOCATION", 10)
-local button = uiScreenGui:WaitForChild("button", 10)
-local startcont = tutorialAllLocation:WaitForChild("startcont", 10)
-local tutorialLabel = tutorialAllLocation:WaitForChild("tutorial", 10)
-local function getDisc()
-	local d = tutorialAllLocation:FindFirstChild("disc")
-	if d and d:IsA("TextLabel") then
-		d.RichText = true
-	end
-	return d
-end
-
-local backbutton = tutorialAllLocation:WaitForChild("backbutton", 10)
-
--- Скрыт по умолчанию
-tutorialAllLocation.Visible = false
-
 -- ======================== TUTORIAL LOGIC ========================
 
 local currentStep = 0
@@ -1259,7 +1258,7 @@ local highlightedNPCs = {} -- Подсветка NPC
 local npcDistanceLabels = {} -- Текст дистанции над NPC
 local lastTeleportTime = 0
 local teleportCooldown = 0.5 -- Задержка между телепортами в секундах (уменьшено)
-local NPC_CHECK_RADIUS = 30 -- Радиус проверки NPC (было 30, теперь 10)
+local NPC_CHECK_RADIUS = 10 -- Радиус проверки NPC (было 30, теперь 10)
 local autoTeleportEnabled = true -- Авто-телепорт после сбора
 local lastInventoryCount = 0 -- Последнее количество предметов в инвентаре
 local teleportToRandomScrap -- Forward declaration
@@ -1415,6 +1414,7 @@ end
 -- Fallback: невидимые заглушки если кнопки не найдены
 if not searchButton then
 	searchButton = Instance.new("TextButton")
+	searchButton.Visible = false
 	searchButton.Parent = screenGui
 end
 if not sellButton then
@@ -1872,8 +1872,11 @@ end
 local function teleportToStart()
 	if isTeleporting then
 		setStatus("Please wait, teleporting...")
+		searchButton.Visible = false
 		return
 	end
+
+	searchButton.Visible = false -- Скрываем кнопку во время телепорта
 
 	local character = player.Character
 	if not character then 
@@ -2190,6 +2193,7 @@ teleportToRandomScrap = function()
 		saveStartPosition()
 	end
 
+	searchButton.Visible = false
 	isTeleporting = true
 
 	lastInventoryCount = getInventoryCount()
@@ -2230,6 +2234,7 @@ teleportToRandomScrap = function()
 	if #safeScraps == 0 then
 		setStatus("No safe teleport positions found! Total scraps: " .. #allScraps)
 		isTeleporting = false
+		searchButton.Visible = false
 		updateHighlights()
 		return
 	end
